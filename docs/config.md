@@ -64,9 +64,11 @@ config file at runtime.
     - [`Gateway.NoFetch`](#gatewaynofetch)
     - [`Gateway.NoDNSLink`](#gatewaynodnslink)
     - [`Gateway.DeserializedResponses`](#gatewaydeserializedresponses)
+    - [`Gateway.AllowCodecConversion`](#gatewayallowcodecconversion)
     - [`Gateway.DisableHTMLErrors`](#gatewaydisablehtmlerrors)
     - [`Gateway.ExposeRoutingAPI`](#gatewayexposeroutingapi)
     - [`Gateway.RetrievalTimeout`](#gatewayretrievaltimeout)
+    - [`Gateway.MaxRequestDuration`](#gatewaymaxrequestduration)
     - [`Gateway.MaxRangeRequestFileSize`](#gatewaymaxrangerequestfilesize)
     - [`Gateway.MaxConcurrentRequests`](#gatewaymaxconcurrentrequests)
     - [`Gateway.HTTPHeaders`](#gatewayhttpheaders)
@@ -145,6 +147,8 @@ config file at runtime.
     - [`Provider.Strategy`](#providerstrategy)
     - [`Provider.WorkerCount`](#providerworkercount)
   - [`Pubsub`](#pubsub)
+    - [When to use a dedicated pubsub node](#when-to-use-a-dedicated-pubsub-node)
+    - [Message deduplication](#message-deduplication)
     - [`Pubsub.Enabled`](#pubsubenabled)
     - [`Pubsub.Router`](#pubsubrouter)
     - [`Pubsub.DisableSigning`](#pubsubdisablesigning)
@@ -239,6 +243,8 @@ config file at runtime.
     - [`Import.UnixFSDirectoryMaxLinks`](#importunixfsdirectorymaxlinks)
     - [`Import.UnixFSHAMTDirectoryMaxFanout`](#importunixfshamtdirectorymaxfanout)
     - [`Import.UnixFSHAMTDirectorySizeThreshold`](#importunixfshamtdirectorysizethreshold)
+    - [`Import.UnixFSHAMTDirectorySizeEstimation`](#importunixfshamtdirectorysizeestimation)
+    - [`Import.UnixFSDAGLayout`](#importunixfsdaglayout)
   - [`Version`](#version)
     - [`Version.AgentSuffix`](#versionagentsuffix)
     - [`Version.SwarmCheckEnabled`](#versionswarmcheckenabled)
@@ -260,9 +266,9 @@ config file at runtime.
     - [`lowpower` profile](#lowpower-profile)
     - [`announce-off` profile](#announce-off-profile)
     - [`announce-on` profile](#announce-on-profile)
+    - [`unixfs-v0-2015` profile](#unixfs-v0-2015-profile)
     - [`legacy-cid-v0` profile](#legacy-cid-v0-profile)
-    - [`test-cid-v1` profile](#test-cid-v1-profile)
-    - [`test-cid-v1-wide` profile](#test-cid-v1-wide-profile)
+    - [`unixfs-v1-2025` profile](#unixfs-v1-2025-profile)
   - [Security](#security)
     - [Port and Network Exposure](#port-and-network-exposure)
     - [Security Best Practices](#security-best-practices)
@@ -714,7 +720,7 @@ Type: `flag`
 
 ## `AutoTLS`
 
-The [AutoTLS](https://blog.libp2p.io/autotls/) feature enables publicly reachable Kubo nodes (those dialable from the public
+The [AutoTLS](https://web.archive.org/web/20260112031855/https://blog.libp2p.io/autotls/) feature enables publicly reachable Kubo nodes (those dialable from the public
 internet) to automatically obtain a wildcard TLS certificate for a DNS name
 unique to their PeerID at `*.[PeerID].libp2p.direct`. This enables direct
 libp2p connections and retrieval of IPFS content from browsers [Secure Context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
@@ -722,7 +728,7 @@ using transports such as [Secure WebSockets](https://github.com/libp2p/specs/blo
 without requiring user to do any manual domain registration and certificate configuration.
 
 Under the hood, [p2p-forge] client uses public utility service at `libp2p.direct` as an [ACME DNS-01 Challenge](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge)
-broker enabling peer to obtain a wildcard TLS certificate tied to public key of their [PeerID](https://docs.libp2p.io/concepts/fundamentals/peers/#peer-id).
+broker enabling peer to obtain a wildcard TLS certificate tied to public key of their [PeerID](https://web.archive.org/web/20251112181025/https://docs.libp2p.io/concepts/fundamentals/peers/#peer-id).
 
 By default, the certificates are requested from Let's Encrypt. Origin and rationale for this project can be found in [community.letsencrypt.org discussion](https://community.letsencrypt.org/t/feedback-on-raising-certificates-per-registered-domain-to-enable-peer-to-peer-networking/223003).
 
@@ -771,6 +777,22 @@ Type: `flag`
 Optional. Controls if final AutoTLS listeners are announced under shorter `/dnsX/A.B.C.D.peerid.libp2p.direct/tcp/4001/tls/ws` addresses instead of fully resolved `/ip4/A.B.C.D/tcp/4001/tls/sni/A-B-C-D.peerid.libp2p.direct/tls/ws`.
 
 The main use for AutoTLS is allowing connectivity from Secure Context in a web browser, and DNS lookup needs to happen there anyway, making `/dnsX` a more compact, more interoperable option without obvious downside.
+
+Default: `true`
+
+Type: `flag`
+
+### `AutoTLS.SkipDNSLookup`
+
+Optional. Controls whether to skip network DNS lookups for [p2p-forge] domains like `*.libp2p.direct`.
+
+This applies to DNS resolution performed via [`DNS.Resolvers`](#dnsresolvers), including `/dns*` multiaddrs resolved by go-libp2p (e.g., peer addresses from DHT or delegated routing).
+
+When enabled (default), A/AAAA queries for hostnames matching [`AutoTLS.DomainSuffix`](#autotlsdomainsuffix) are resolved locally by parsing the IP address directly from the hostname (e.g., `1-2-3-4.peerID.libp2p.direct` resolves to `1.2.3.4` without network I/O). This avoids unnecessary DNS queries since the IP is already encoded in the hostname.
+
+If the hostname format is invalid (wrong peerID, malformed IP encoding), the resolver falls back to network DNS, ensuring forward compatibility with potential future DNS record types.
+
+Set to `false` to always use network DNS for these domains. This is primarily useful for debugging or if you need to override resolution behavior via [`DNS.Resolvers`](#dnsresolvers).
 
 Default: `true`
 
@@ -887,6 +909,14 @@ storage system.
 
 A soft upper limit for the size of the ipfs repository's datastore. With `StorageGCWatermark`,
 is used to calculate whether to trigger a gc run (only if `--enable-gc` flag is set).
+
+> [!NOTE]
+> This only controls when automatic GC of raw blocks is triggered. It is not a
+> hard limit on total disk usage. The metadata stored alongside blocks (pins,
+> MFS, provider system state, pubsub message ID tracking, and other internal
+> data) is not counted against this limit. Always include extra headroom to
+> account for metadata overhead. See [datastores.md](datastores.md) for details
+> on how different datastore backends handle disk space reclamation.
 
 Default: `"10GB"`
 
@@ -1120,6 +1150,32 @@ Default: `true`
 
 Type: `flag`
 
+### `Gateway.AllowCodecConversion`
+
+An optional flag to enable automatic conversion between codecs when the
+requested format differs from the block's native codec (e.g., converting
+dag-pb or dag-cbor to dag-json).
+
+When disabled (the default), the gateway returns `406 Not Acceptable` for
+codec mismatches, following behavior specified in
+[IPIP-524](https://github.com/ipfs/specs/pull/524).
+
+Most users should keep this disabled unless legacy
+[IPLD Logical Format](https://web.archive.org/web/20260204204727/https://ipld.io/specs/codecs/dag-pb/spec/#logical-format)
+support is needed as a stop-gap while switching clients to `?format=raw`
+and converting client-side.
+
+Instead of relying on gateway-side conversion, fetch the raw block using
+`?format=raw` (`application/vnd.ipld.raw`) and convert client-side. This:
+
+- Allows clients to use any codec without waiting for gateway support
+- Enables ecosystem innovation without gateway operator coordination
+- Works with libraries like [@helia/verified-fetch](https://www.npmjs.com/package/@helia/verified-fetch) in JavaScript
+
+Default: `false`
+
+Type: `flag`
+
 ### `Gateway.DisableHTMLErrors`
 
 An optional flag to disable the pretty HTML error pages of the gateway. Instead,
@@ -1175,6 +1231,16 @@ Maximum duration Kubo will wait for content retrieval (new bytes to arrive).
 A value of 0 disables this timeout.
 
 Default: `30s`
+
+Type: `optionalDuration`
+
+### `Gateway.MaxRequestDuration`
+
+An absolute deadline for the entire gateway request. Unlike [`RetrievalTimeout`](#gatewayretrievaltimeout) (which resets on each data write and catches stalled transfers), this is a hard limit on the total time a request can take.
+
+Returns 504 Gateway Timeout when exceeded. This protects the gateway from edge cases and slow client attacks.
+
+Default: `1h`
 
 Type: `optionalDuration`
 
@@ -1776,7 +1842,7 @@ Type: `optionalDuration`
 
 ### `Ipns.UsePubsub`
 
-Enables IPFS over pubsub experiment for publishing IPNS records in real time.
+Enables [IPNS over PubSub](https://specs.ipfs.tech/ipns/ipns-pubsub-router/) for publishing and resolving IPNS records in real time.
 
 **EXPERIMENTAL:**  read about current limitations at [experimental-features.md#ipns-pubsub](./experimental-features.md#ipns-pubsub).
 
@@ -2394,15 +2460,55 @@ Replaced with [`Provide.DHT.MaxWorkers`](#providedhtmaxworkers).
 
 ## `Pubsub`
 
-**DEPRECATED**: See [#9717](https://github.com/ipfs/kubo/issues/9717)
+Pubsub configures Kubo's opt-in, opinionated [libp2p pubsub](https://web.archive.org/web/20260116065034/https://docs.libp2p.io/concepts/pubsub/overview/) instance.
+To enable, set `Pubsub.Enabled` to `true`.
 
-Pubsub configures the `ipfs pubsub` subsystem. To use, it must be enabled by
-passing the `--enable-pubsub-experiment` flag to the daemon
-or via the `Pubsub.Enabled` flag below.
+**EXPERIMENTAL:** This is an opt-in feature. Its primary use case is
+[IPNS over PubSub](https://specs.ipfs.tech/ipns/ipns-pubsub-router/), which
+enables real-time IPNS record propagation. See [`Ipns.UsePubsub`](#ipnsusepubsub)
+for details.
+
+The `ipfs pubsub` commands can also be used for basic publish/subscribe
+operations, but only if Kubo's built-in message validation (described below) is
+acceptable for your use case.
+
+### When to use a dedicated pubsub node
+
+Kubo's pubsub is optimized for IPNS. It uses opinionated message validation
+that may not fit all applications. If you need custom Message ID computation,
+different deduplication logic, or validation rules beyond what Kubo provides,
+consider building a dedicated pubsub node using
+[go-libp2p-pubsub](https://github.com/libp2p/go-libp2p-pubsub) directly.
+
+### Message deduplication
+
+Kubo uses two layers of message deduplication to handle duplicate messages that
+may arrive via different network paths:
+
+**Layer 1: In-memory TimeCache (Message ID)**
+
+When a message arrives, Kubo computes its Message ID (hash of the message
+content) and checks an in-memory cache. If the ID was seen recently, the
+message is dropped. This cache is controlled by:
+
+- [`Pubsub.SeenMessagesTTL`](#pubsubseenmessagesttl) - how long Message IDs are remembered (default: 120s)
+- [`Pubsub.SeenMessagesStrategy`](#pubsubseenmessagesstrategy) - whether TTL resets on each sighting
+
+This cache is fast but limited: it only works within the TTL window and is
+cleared on node restart.
+
+**Layer 2: Persistent Seqno Validator (per-peer)**
+
+For stronger deduplication, Kubo tracks the maximum sequence number seen from
+each peer and persists it to the datastore. Messages with sequence numbers
+lower than the recorded maximum are rejected. This prevents replay attacks and
+handles message cycles in large networks where messages may take longer than
+the TimeCache TTL to propagate.
+
+This layer survives node restarts. The state can be inspected or cleared using
+`ipfs pubsub reset` (for testing/recovery only).
 
 ### `Pubsub.Enabled`
-
-**DEPRECATED**: See [#9717](https://github.com/ipfs/kubo/issues/9717)
 
 Enables the pubsub system.
 
@@ -2411,8 +2517,6 @@ Default: `false`
 Type: `flag`
 
 ### `Pubsub.Router`
-
-**DEPRECATED**: See [#9717](https://github.com/ipfs/kubo/issues/9717)
 
 Sets the default router used by pubsub to route messages to peers. This can be one of:
 
@@ -2429,10 +2533,9 @@ Type: `string` (one of `"floodsub"`, `"gossipsub"`, or `""` (apply default))
 
 ### `Pubsub.DisableSigning`
 
-**DEPRECATED**: See [#9717](https://github.com/ipfs/kubo/issues/9717)
+Disables message signing and signature verification.
 
-Disables message signing and signature verification. Enable this option if
-you're operating in a completely trusted network.
+**FOR TESTING ONLY - DO NOT USE IN PRODUCTION**
 
 It is _not_ safe to disable signing even if you don't care _who_ sent the
 message because spoofed messages can be used to silence real messages by
@@ -2444,20 +2547,12 @@ Type: `bool`
 
 ### `Pubsub.SeenMessagesTTL`
 
-**DEPRECATED**: See [#9717](https://github.com/ipfs/kubo/issues/9717)
+Controls the time window for the in-memory Message ID cache (Layer 1
+deduplication). Messages with the same ID seen within this window are dropped.
 
-Controls the time window within which duplicate messages, identified by Message
-ID, will be identified and won't be emitted again.
-
-A smaller value for this parameter means that Pubsub messages in the cache will
-be garbage collected sooner, which can result in a smaller cache. At the same
-time, if there are slower nodes in the network that forward older messages,
-this can cause more duplicates to be propagated through the network.
-
-Conversely, a larger value for this parameter means that Pubsub messages in the
-cache will be garbage collected later, which can result in a larger cache for
-the same traffic pattern. However, it is less likely that duplicates will be
-propagated through the network.
+A smaller value reduces memory usage but may cause more duplicates in networks
+with slow nodes. A larger value uses more memory but provides better duplicate
+detection within the time window.
 
 Default: see `TimeCacheDuration` from [go-libp2p-pubsub](https://github.com/libp2p/go-libp2p-pubsub)
 
@@ -2465,24 +2560,12 @@ Type: `optionalDuration`
 
 ### `Pubsub.SeenMessagesStrategy`
 
-**DEPRECATED**: See [#9717](https://github.com/ipfs/kubo/issues/9717)
+Determines how the TTL countdown for the Message ID cache works.
 
-Determines how the time-to-live (TTL) countdown for deduplicating Pubsub
-messages is calculated.
-
-The Pubsub seen messages cache is a LRU cache that keeps messages for up to a
-specified time duration. After this duration has elapsed, expired messages will
-be purged from the cache.
-
-The `last-seen` cache is a sliding-window cache. Every time a message is seen
-again with the SeenMessagesTTL duration, its timestamp slides forward. This
-keeps frequently occurring messages cached and prevents them from being
-continually propagated, especially because of issues that might increase the
-number of duplicate messages in the network.
-
-The `first-seen` cache will store new messages and purge them after the
-SeenMessagesTTL duration, even if they are seen multiple times within this
-duration.
+- `last-seen` - Sliding window: TTL resets each time the message is seen again.
+  Keeps frequently-seen messages in cache longer, preventing continued propagation.
+- `first-seen` - Fixed window: TTL counts from first sighting only. Messages are
+  purged after the TTL regardless of how many times they're seen.
 
 Default: `last-seen` (see [go-libp2p-pubsub](https://github.com/libp2p/go-libp2p-pubsub))
 
@@ -3311,7 +3394,7 @@ NATs.
 
 See also:
 
-- Docs: [Libp2p Circuit Relay](https://docs.libp2p.io/concepts/circuit-relay/)
+- Docs: [Libp2p Circuit Relay](https://web.archive.org/web/20260128152445/https://docs.libp2p.io/concepts/nat/circuit-relay/)
 - [`Swarm.RelayClient.Enabled`](#swarmrelayclientenabled) for getting a public
 - `/p2p-circuit` address when behind a firewall.
 - [`Swarm.EnableHolePunching`](#swarmenableholepunching) for direct connection upgrade through relay
@@ -3359,7 +3442,7 @@ is a transport protocol that provides another way for browsers to
 connect to the rest of the libp2p network. WebRTC Direct allows for browser
 nodes to connect to other nodes without special configuration, such as TLS
 certificates. This can be useful for browser nodes that do not yet support
-[WebTransport](https://blog.libp2p.io/2022-12-19-libp2p-webtransport/),
+[WebTransport](https://web.archive.org/web/20260107053250/https://blog.libp2p.io/2022-12-19-libp2p-webtransport/),
 which is still relatively new and has [known issues](https://github.com/libp2p/js-libp2p/issues/2572).
 
 Enabling this transport allows Kubo node to act on `/udp/4001/webrtc-direct`
@@ -3459,7 +3542,7 @@ Please remove this option from your config.
 
 ## `DNS`
 
-Options for configuring DNS resolution for [DNSLink](https://docs.ipfs.tech/concepts/dnslink/) and `/dns*` [Multiaddrs][libp2p-multiaddrs].
+Options for configuring DNS resolution for [DNSLink](https://docs.ipfs.tech/concepts/dnslink/) and `/dns*` [Multiaddrs][libp2p-multiaddrs] (including peer addresses discovered via DHT or delegated routing).
 
 ### `DNS.Resolvers`
 
@@ -3489,6 +3572,7 @@ Be mindful that:
 - The default catch-all resolver is the cleartext one provided by your operating system. It can be overridden by adding a DoH entry for the DNS root indicated by  `.` as illustrated above.
 - Out-of-the-box support for selected non-ICANN TLDs relies on third-party centralized services provided by respective communities on best-effort basis.
 - The special value `"auto"` uses DNS resolvers from [AutoConf](#autoconf) when enabled. For example: `{".": "auto"}` uses any custom DoH resolver (global or per TLD) provided by AutoConf system.
+- When [`AutoTLS.SkipDNSLookup`](#autotlsskipdnslookup) is enabled (default), domains matching [`AutoTLS.DomainSuffix`](#autotlsdomainsuffix) (default: `libp2p.direct`) are resolved locally by parsing the IP directly from the hostname. Set `AutoTLS.SkipDNSLookup=false` to force network DNS lookups for these domains.
 
 Default: `{".": "auto"}`
 
@@ -3609,9 +3693,11 @@ Type: `flag`
 
 ## `Import`
 
-Options to configure the default options used for ingesting data, in commands such as `ipfs add` or `ipfs block put`. All affected commands are detailed per option.
+Options to configure the default parameters used for ingesting data, in commands such as `ipfs add` or `ipfs block put`. All affected commands are detailed per option.
 
-Note that using flags will override the options defined here.
+These options implement [IPIP-499: UnixFS CID Profiles](https://github.com/ipfs/specs/pull/499) for reproducible CID generation across IPFS implementations. Instead of configuring individual options, you can apply a predefined profile with `ipfs config profile apply <profile-name>`. See [Profiles](#profiles) for available options like `unixfs-v1-2025`.
+
+Note that using CLI flags will override the options defined here.
 
 ### `Import.CidVersion`
 
@@ -3638,8 +3724,20 @@ The default UnixFS chunker. Commands affected: `ipfs add`.
 Valid formats:
 
 - `size-<bytes>` - fixed size chunker
-- `rabin-<min>-<avg>-<max>` - rabin fingerprint chunker  
+- `rabin-<min>-<avg>-<max>` - rabin fingerprint chunker
 - `buzhash` - buzhash chunker
+
+The maximum accepted value for `size-<bytes>` and rabin `max` parameter is
+`2MiB - 256 bytes` (2096896 bytes). The 256-byte overhead budget is reserved
+for protobuf/UnixFS framing so that serialized blocks stay within the 2MiB
+block size limit defined by the
+[bitswap spec](https://specs.ipfs.tech/bitswap-protocol/#block-sizes).
+The `buzhash` chunker uses a fixed internal maximum of 512KiB and is not
+affected by this limit.
+
+Only the fixed-size chunker (`size-<bytes>`) guarantees that the same data
+will always produce the same CID. The `rabin` and `buzhash` chunkers may
+change their internal parameters in a future release.
 
 Default: `size-262144`
 
@@ -3791,6 +3889,42 @@ Default: `256KiB` (may change, inspect `DefaultUnixFSHAMTDirectorySizeThreshold`
 
 Type: [`optionalBytes`](#optionalbytes)
 
+### `Import.UnixFSHAMTDirectorySizeEstimation`
+
+Controls how directory size is estimated when deciding whether to switch
+from a basic UnixFS directory to HAMT sharding.
+
+Accepted values:
+
+- `links` (default): Legacy estimation using sum of link names and CID byte lengths.
+- `block`: Full serialized dag-pb block size for accurate threshold decisions.
+- `disabled`: Disable HAMT sharding entirely (directories always remain basic).
+
+The `block` estimation is recommended for new profiles as it provides more
+accurate threshold decisions and better cross-implementation consistency.
+See [IPIP-499](https://github.com/ipfs/specs/pull/499) for more details.
+
+Commands affected: `ipfs add`
+
+Default: `links`
+
+Type: `optionalString`
+
+### `Import.UnixFSDAGLayout`
+
+Controls the DAG layout used when chunking files.
+
+Accepted values:
+
+- `balanced` (default): Balanced DAG layout with uniform leaf depth.
+- `trickle`: Trickle DAG layout optimized for streaming.
+
+Commands affected: `ipfs add`
+
+Default: `balanced`
+
+Type: `optionalString`
+
 ## `Version`
 
 Options to configure agent version announced to the swarm, and leveraging
@@ -3834,7 +3968,7 @@ applied with the `--profile` flag to `ipfs init` or with the `ipfs config profil
 apply` command. When a profile is applied a backup of the configuration file
 will be created in `$IPFS_PATH`.
 
-Configuration profiles can be applied additively. For example, both the `test-cid-v1` and `lowpower` profiles can be applied one after the other.
+Configuration profiles can be applied additively. For example, both the `unixfs-v1-2025` and `lowpower` profiles can be applied one after the other.
 The available configuration profiles are listed below. You can also find them
 documented in `ipfs config profile --help`.
 
@@ -3940,9 +4074,21 @@ Configures the node to use the pebble datastore with metrics. This is the same a
 Configures the node to use the **legacy** badgerv1 datastore.
 
 > [!CAUTION]
-> This is based on very old badger 1.x, which has known bugs and is no longer supported by the upstream team.
-> It is provided here only for pre-existing users, allowing them to migrate away to more modern datastore.
-> Do not use it for new deployments, unless you really, really know what you are doing.
+> **Badger v1 datastore is deprecated and will be removed in a future Kubo release.**
+>
+> This is based on very old badger 1.x, which has not been maintained by its
+> upstream maintainers for years and has known bugs (startup timeouts, shutdown
+> hangs, file descriptor
+> exhaustion, and more). Do not use it for new deployments.
+>
+> **To migrate:** create a new `IPFS_PATH` with `flatfs`
+> (`ipfs init --profile=flatfs`), move pinned data via
+> `ipfs dag export/import` or `ipfs pin ls -t recursive|add`, and decommission the
+> old badger-based node. When it comes to block storage, use experimental
+> `pebbleds` only if you are sure modern `flatfs` does not serve your use case
+> (most users will be perfectly fine with `flatfs`, it is also possible to keep
+> `flatfs` for blocks and replace `leveldb` with `pebble` if preferred over
+> `leveldb`).
 
 Also, be aware that:
 
@@ -3952,17 +4098,16 @@ Also, be aware that:
   `flatfs`.
 - This datastore uses up to several gigabytes of memory.
 - Good for medium-size datastores, but may run into performance issues if your dataset is bigger than a terabyte.
-- The current implementation is based on old badger 1.x which is no longer supported by the upstream team.
 
 > [!WARNING]
 > This profile may only be applied when first initializing the node via `ipfs init --profile badgerds`
 
 > [!NOTE]
-> See other caveats and configuration options at [`datastores.md#pebbleds`](datastores.md#pebbleds)
+> See other caveats and configuration options at [`datastores.md#badgerds`](datastores.md#badgerds)
 
 ### `badgerds-measure` profile
 
-Configures the node to use the **legacy** badgerv1 datastore with metrics. This is the same as [`badgerds` profile](#badger-profile) with the addition of the `measure` datastore wrapper.
+Configures the node to use the **legacy** badgerv1 datastore with metrics. This is the same as [`badgerds` profile](#badger-profile) with the addition of the `measure` datastore wrapper. This profile will be removed in a future Kubo release.
 
 ### `lowpower` profile
 
@@ -3991,42 +4136,35 @@ Disables [Provide](#provide) system (and announcing to Amino DHT).
 
 (Re-)enables [Provide](#provide) system (reverts [`announce-off` profile](#announce-off-profile)).
 
+### `unixfs-v0-2015` profile
+
+Legacy UnixFS import profile for backward-compatible CID generation.
+Produces CIDv0 with no raw leaves, sha2-256, 256 KiB chunks, and
+link-based HAMT size estimation.
+
+See <https://github.com/ipfs/kubo/blob/master/config/profile.go> for exact [`Import.*`](#import) settings.
+
+> [!NOTE]
+> Use only when legacy CIDs are required. For new projects, use [`unixfs-v1-2025`](#unixfs-v1-2025-profile).
+>
+> See [IPIP-499](https://github.com/ipfs/specs/pull/499) for more details.
+
 ### `legacy-cid-v0` profile
 
-Makes UnixFS import (`ipfs add`) produce legacy CIDv0 with no raw leaves, sha2-256 and 256 KiB chunks.
+Alias for [`unixfs-v0-2015`](#unixfs-v0-2015-profile) profile.
+
+### `unixfs-v1-2025` profile
+
+Recommended UnixFS import profile for cross-implementation CID determinism.
+Uses CIDv1, raw leaves, sha2-256, 1 MiB chunks, 1024 links per file node,
+256 HAMT fanout, and block-based size estimation for HAMT threshold.
 
 See <https://github.com/ipfs/kubo/blob/master/config/profile.go> for exact [`Import.*`](#import) settings.
 
 > [!NOTE]
-> This profile is provided for legacy users and should not be used for new projects.
-
-### `test-cid-v1` profile
-
-Makes UnixFS import (`ipfs add`) produce modern CIDv1 with raw leaves, sha2-256
-and 1 MiB chunks (max 174 links per file, 256 per HAMT node, switch dir to HAMT
-above 256KiB).
-
-See <https://github.com/ipfs/kubo/blob/master/config/profile.go> for exact [`Import.*`](#import) settings.
-
-> [!NOTE]
-> [`Import.*`](#import) settings applied by this profile MAY change in future release. Provided for testing purposes.
+> This profile ensures CID consistency across different IPFS implementations.
 >
-> Follow [kubo#4143](https://github.com/ipfs/kubo/issues/4143) for more details,
-> and provide feedback in [discuss.ipfs.tech/t/should-we-profile-cids](https://discuss.ipfs.tech/t/should-we-profile-cids/18507) or [ipfs/specs#499](https://github.com/ipfs/specs/pull/499).
-
-### `test-cid-v1-wide` profile
-
-Makes UnixFS import (`ipfs add`) produce modern CIDv1 with raw leaves, sha2-256
-and 1 MiB chunks and wider file DAGs (max 1024 links per every node type,
-switch dir to HAMT above 1MiB).
-
-See <https://github.com/ipfs/kubo/blob/master/config/profile.go> for exact [`Import.*`](#import) settings.
-
-> [!NOTE]
-> [`Import.*`](#import) settings applied by this profile MAY change in future release. Provided for testing purposes.
->
-> Follow [kubo#4143](https://github.com/ipfs/kubo/issues/4143) for more details,
-> and provide feedback in [discuss.ipfs.tech/t/should-we-profile-cids](https://discuss.ipfs.tech/t/should-we-profile-cids/18507) or [ipfs/specs#499](https://github.com/ipfs/specs/pull/499).
+> See [IPIP-499](https://github.com/ipfs/specs/pull/499) for more details.
 
 ## Security
 
